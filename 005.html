@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>HTML5 Web Audio Instrument 005</title>
+    <meta charset="UTF-8"\>
+    <script type="text/javascript" src="d3.v2.min.js"></script>
+  </head>
+  <body>
+    <style>
+    button {
+        height: 5em;
+    }
+    </style>
+    <div id="freq"></div>
+    <div id="mfreq"></div>
+    <div id="lpf"></div>
+    <div id="q"></div>
+    <div id="mg"></div>
+
+    <div id="palette"></div>
+    Refactored. Bit of a sequencer with random layout
+    <script>
+/*
+
+Copyright 2014 Abram Hindle
+
+From http://www.html5rocks.com/en/tutorials/webaudio/intro/
+Copyright 2013 Boris Smus
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+var context;
+
+var width;
+var height;
+var svg;
+var N = 10;
+var maxcmp = 4;
+var histlength = 16;
+var notesperbar = 16;
+var bpm = 90;
+
+function disableDragging() {
+  if(d3.event.preventDefault)
+    d3.event.preventDefault();
+}
+
+function feuclid(e1,e2) {
+    var x = e1[0] - e2[0];
+    var y = e1[1] - e2[1];
+    return Math.sqrt(x * x + y * y);
+}
+
+function cmp(a,b) {
+    if (a === b) {
+        return 0;
+    } else if (a > b) {
+        return 1;
+    } else {
+        return -1;
+    }
+}
+
+function svgInit(ugen) {
+    width =  window.innerWidth;
+    height = window.innerHeight;
+    var marea = width * height;
+    
+    var color = d3.scale.category20();
+
+
+    svg = d3.select("#palette")
+        .append("svg")
+        .attr("width", width)
+        .attr("height", height)
+        .attr("class", "PiYG");
+
+    var centers = d3.range(N).map(function(d) {
+        var nx = Math.random();
+        var ny = Math.random();
+        var py = height * ny;
+        var px = width * nx;
+
+        var params = ugen.genParams();        
+
+        return {
+            "params":params,
+            "px":[px,py],
+            "loc":[nx,ny],
+        }
+    });
+    
+
+
+    svg.selectAll("circle")
+        .data(centers)
+        .enter().append("circle")
+        .attr("transform", function(d) { return "translate(" + d["px"] +")"; })
+        .attr("r",25)
+        .style("fill",function(d) { return "black";  })
+        .on("click", function(d) { ugen.allSetter(d.params); });
+
+    function dealWithIt(e) {
+        var x = e[0] / width;
+        var y = e[1] / height;        
+        var pt = [x,y];
+        var dists = centers.map(function(center) {
+            return [feuclid(pt, center.loc), center];            
+        });
+        dists = dists.sort(function(a,b) {
+            return (a[0] > b[0])?1:(a[0]<b[0])?-1:0; 
+        });
+
+        var np = ugen.nParams();
+        var tparams = Array(np);
+        for (var i = 0; i < np; i++) {
+            tparams[i] = 0.0;
+        }
+
+        var weight = 0.0;
+        for (var i = 0; i < maxcmp; i++) {
+            var lw = dists[i][0];
+            weight += lw;
+            for (var j = 0; j < np; j++) {
+                tparams[j] += lw * dists[i][1].params[j];
+            }
+        }
+        for (var j = 0; j < np; j++) {
+            tparams[j] /= weight;
+        }
+
+        ugen.allSetter( tparams );
+        ugen.remember( tparams );
+    }
+
+    function update() {
+        disableDragging();
+        var click = d3.mouse(this);
+        dealWithIt(click);
+    };
+
+    function touchUpdate() {
+        disableDragging();
+        var touches = d3.touches(this);
+        if (touches.length > 0) {
+            var click =  touches[0];
+            dealWithIt(click);
+        }
+    };
+
+    svg.on("touchmove", touchUpdate)
+       .on("touchstart", touchUpdate)
+       .on("mousedown", update)
+       .on("mousemove", update);
+
+
+
+};
+
+
+
+function audioInit() {
+    try {
+        // Fix up for prefixing
+        window.AudioContext = window.AudioContext||window.webkitAudioContext;
+        context = new AudioContext();
+    }
+    catch(e) {
+        alert('Web Audio API is not supported in this browser' + e);
+    }
+    ready();
+}
+
+function baseUGEN() {
+    var obj = {};
+    obj["nParams"] = function() { return 0; };
+    obj["allSetter"] = function(all) {  };
+    // general
+    obj["remember"] = function(all) {
+        obj.history.push(all);
+        if (obj.history.length > histlength) {
+            obj.history.shift();
+        }
+    };
+    obj["genParams"] = function() {
+        console.log("getParams needs to implemented");
+        return [];
+    };
+    //general
+    obj["index"] = 0;
+    //general
+    obj["mkPlayer"] = function() {
+        return function() {
+            console.log("Tick");
+            var param = obj.history[obj["index"]++ % obj.history.length];
+            if (param!=undefined) {
+                obj.allSetter(param);
+            }
+            return 1;
+        }
+    };
+    obj["allSetter"] = function(all) {      
+        console.log("allSetter needs to implemented");
+    }
+    return obj;
+}
+
+function exampleFreqModulation() {    
+    var obj = baseUGEN();
+    var mod = context.createOscillator();
+    mod.frequency.value = 90;
+    //mod.type = "sawtooth";
+    mod.type = "sine";
+
+    var modGain = context.createGain();
+    modGain.gain.value = 1000; // 1000 hz
+
+    var osc = context.createOscillator();
+    osc.frequency.value = 222.0;
+    osc.type = "sine";
+
+    var gain = context.createGain();
+    gain.gain.value = 0.3;
+
+
+    var lowpass = context.createBiquadFilter();
+    lowpass.type = "lowpass";
+    lowpass.frequency.value = 20000;
+    lowpass.Q.value = 1.0;
+    lowpass.connect( context.destination );
+
+
+    mod.connect(modGain);
+    modGain.connect(osc.frequency);
+    osc.connect(gain);
+    gain.connect(lowpass);
+
+
+
+    obj["history"] = [];
+    mod.start(0);
+    osc.start(0);
+    obj["lpf"] = function(lpf) {
+        lowpass.frequency.value = lpf;
+        document.getElementById("lpf").innerHTML = lpf;
+    };
+    obj["q"] = function(q) {
+        lowpass.Q.value = q;
+        document.getElementById("q").innerHTML = q;
+    };
+    obj["mg"] = function(mg) {
+        modGain.gain.value = mg;
+        document.getElementById("mg").innerHTML = mg;
+    };
+    obj["mod"] = mod;
+    obj["osc"] = osc;
+    obj["mfreq"] = function(mfreq) { 
+        mod.frequency.value = mfreq || 90; 
+        document.getElementById("mfreq").innerHTML = mfreq;
+    };
+    obj["freq"] = function(freq) { 
+        osc.frequency.value = (freq!==undefined)?freq:220.0; 
+        document.getElementById("freq").innerHTML = freq;
+    };
+    obj["stop"] = function(){mod.stop(0); osc.stop(0);};
+    obj["mkSetter"] = function mkSetter(freq, mod) {
+    	return function() {
+    	    obj.freq(freq);
+    	    obj.mfreq(mod);
+    	};
+    };
+    obj["nParams"] = function() { return 5; };
+    obj["allSetter"] = function(all) {        
+        obj.freq(all[0]);
+        obj.mfreq(all[1]);
+        obj.lpf(all[2]);
+        obj.q(all[3]);
+        obj.mg(all[4]);
+    };
+
+    
+    obj["genParams"] = function() {
+        var mod = 0.01+1000 * Math.random() * Math.random();
+	var freq = 0.01+10000 * Math.random() * Math.random();
+	var lpf = freq + 1000 * Math.random() * Math.random();
+        var q = Math.random() * 2.5;
+        var mg = 100 + Math.random() * Math.random()*4000;
+        return [mod,freq,lpf,q,mg];
+    };
+    
+    return obj;
+}
+
+
+function ready() {
+    var fm = exampleFreqModulation();
+    fm.allSetter(fm.genParams());
+    svgInit(fm);
+    setInterval( fm.mkPlayer(), 60*1000/(notesperbar*bpm));
+}
+
+
+
+window.addEventListener('load', audioInit, false);
+    </script>
+  </body>
+</html>
